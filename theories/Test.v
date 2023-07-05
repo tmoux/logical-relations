@@ -1,6 +1,7 @@
 Require Import Unicode.Utf8.
 Require Import Relations.Relation_Operators.
-Require Import Program.Equality List Lia.
+(* Require Import Program.Equality List Lia. *)
+Require Import List.
 Require Import Autosubst.Autosubst.
 
 Inductive type : Type :=
@@ -25,7 +26,6 @@ Inductive value : term → Prop :=
 | value_true : value TTrue
 | value_false : value TFalse
 | value_lam : forall T e, value (TLam T e).
-
 #[export] Hint Constructors value : core.
 
 Lemma value_dec : forall v, value v ∨ ¬ (value v).
@@ -44,12 +44,18 @@ Inductive step : term -> term -> Prop :=
 | step_ifT : ∀ e1 e2, TIf TTrue e1 e2 --> e1
 | step_ifF : ∀ e1 e2, TIf TFalse e1 e2 --> e2
 where "e '-->' e'" := (step e e') : type_scope.
-
 #[export] Hint Constructors step : core.
 
 Definition multistep := clos_refl_trans_1n _ step.
 Notation "e '-->*' e'" := (multistep e e') (at level 80).
 #[export] Hint Constructors clos_refl_trans_1n : core.
+
+Lemma multistep_trans : ∀ x y z, x -->* y → y -->* z → x -->* z.
+Proof.
+  intros x y z H.
+  induction H; intros; auto.
+  econstructor. apply H. apply IHclos_refl_trans_1n; auto.
+Qed.
 
 Definition nf (t : term) := ∀ t', ¬ (t --> t').
 Lemma value_is_nf : ∀ v, value v → nf v.
@@ -115,6 +121,20 @@ Section Deterministic.
         rewrite Hy in Hv.
         apply IHHu. apply Hv.
   Qed.
+
+  Definition irred (e : term) := forall e', ¬ (e --> e').
+  Ltac irred_step :=
+    match goal with
+    | [ H : irred ?e, Hstep : ?e --> ?e' |- _ ] => exfalso; apply H in Hstep; assumption
+    end.
+
+  Corollary irred_unique : ∀ a b c, a -->* b → a -->* c → irred b → c -->* b.
+  Proof.
+    intros.
+    destruct (confluence H H0) as [z [? ?]].
+    inversion H2; subst. auto. irred_step.
+  Qed.
+
 End Deterministic.
 
 
@@ -157,7 +177,7 @@ Section TypeSafety.
   Definition safe (e : term) := forall e', e -->* e' → value e' ∨ ∃ e'', e' --> e''.
 
   (*
-  This definition doesn't work: runs into positivity requirement.
+  This definition doesn't work: runs into positivity requirement for inductive types.
   Inductive sem_value : type → term → Prop :=
   | sem_value_true : sem_value Bool TTrue
   | sem_value_false : sem_value Bool TFalse
@@ -166,11 +186,6 @@ Section TypeSafety.
   | sem_exprC : ∀ τ e, (∀ e', e -->* e' → (* irred(e') → *) sem_value τ e') → sem_expr τ e.
   *)
 
-  Definition irred (e : term) := forall e', ¬ (e --> e').
-  Ltac irred_step :=
-    match goal with
-    | [ H : irred ?e, Hstep : ?e --> ?e' |- _ ] => exfalso; apply H in Hstep; assumption
-    end.
 
   Axiom LEM : ∀ P, P ∨ ¬ P.
   Lemma irred_decidable : ∀ e, (∃ e', e --> e') ∨ irred e.
@@ -214,6 +229,12 @@ Section TypeSafety.
   Definition sem_expr (τ : type) : term → Prop :=
         fun e => ∀ e', e -->* e' → irred e' → sem_value τ e'.
 
+  Lemma sem_value_arr : ∀ τ₁ τ₂ t, sem_value (τ₁ ⇒ τ₂) t = ∃ e, t = TLam τ₁ e ∧ (∀ v, sem_value τ₁ v → sem_expr τ₂ e.[v/]).
+  Proof.
+    reflexivity.
+  Qed.
+
+
   Notation "v '∈' '𝓥⟦' τ '⟧'" := (sem_value τ v) (at level 80).
   Notation "e '∈' '𝓔⟦' τ '⟧'" := (sem_expr τ e) (at level 80).
 
@@ -250,7 +271,6 @@ Section TypeSafety.
 
   Definition sem_has_type (Γ : context) (e : term) (τ : type) :=
     ∀ (γ : var → term), valid_subst Γ γ → e.[γ] ∈ 𝓔⟦ τ ⟧.
-  (* Need that γ is a correct substitution according to Γ, that e.[γ] is closed and so on *)
   Notation "Γ '⊧' e '∈' τ" := (sem_has_type Γ e τ) (at level 80).
   Notation "'⊧' e '∈' T" := (empty ⊧ e ∈ T) (at level 85).
 
@@ -265,6 +285,43 @@ Section TypeSafety.
       auto.
   Qed.
 
+  (* When If takes a step, either we take a step to another If, or we step to one of the branches.
+   If the whole expression steps to a reducible value, e1 must have stepped to a reducible value.
+   The induction principle is tricky, naively inducting on the Hif doesn't seem to work. Instead we write it using a fixpoint, but we need to be careful to ensure the arguments are decreasing. *)
+  Fixpoint tif_lemma (e' e2 e3 : term) (H : irred e') (e1 : term) (Hif : TIf e1 e2 e3 -->* e') {struct Hif} : ∃ e1', e1 -->* e1' ∧ irred e1'.
+  Proof.
+    destruct Hif.
+    - exists e1. split. constructor.
+      intros e1' Hstep.
+      assert (TIf e1 e2 e3 --> TIf e1' e2 e3). constructor. auto.
+      unfold irred in H. specialize H with (TIf e1' e2 e3). apply H. auto.
+    - destruct (irred_decidable e1).
+      * destruct H1 as [e1' ?]. specialize tif_lemma with z e2 e3 e1'.
+        apply tif_lemma in H.
+        destruct H as [e1'' [? ?]].
+        exists e1''. split.
+        econstructor. apply H1. apply H.
+        apply H2.
+        assert (TIf e1 e2 e3 --> TIf e1' e2 e3). constructor. auto.
+        assert (y = TIf e1' e2 e3). apply (step_deterministic H0 H2).
+        rewrite H3 in *. apply Hif.
+      * exists e1. split. constructor. auto.
+   Qed.
+
+  Print tif_lemma.
+
+  (* Need a bunch of congruence step lemmas: *)
+  Lemma if_cond_step : ∀ e1 e2 e3 e1', e1 -->* e1' → TIf e1 e2 e3 -->* TIf e1' e2 e3.
+  Proof.
+    intros.
+    induction H; auto.
+    constructor.
+    econstructor.
+    constructor. apply H.
+    assumption.
+  Qed.
+
+
   Lemma fund_lemma : ∀ e τ, ⊢ e ∈ τ → ⊧ e ∈ τ.
   Proof.
     intros e τ He.
@@ -278,28 +335,49 @@ Section TypeSafety.
       assert (e' = TLam τ₁ e.[up γ]). { apply value_multistep; auto. }
       rewrite H.
       intros.
-      simpl.
+      rewrite sem_value_arr.
       eexists; split; auto.
       intros v Hv.
       unfold sem_has_type in IHHe.
       specialize IHHe with (v .: γ).
-      rewrite subst_comp. simpl.
-      assert (e.[up γ >> v .: ids] = e.[v .: γ]). { autosubst. }
+      assert (e.[up γ].[v/] = e.[v .: γ]). { autosubst. }
       rewrite H1.
-      unfold sem_expr in IHHe.
       apply IHHe.
       constructor; auto.
-    - (* App case *) admit.
+    - (* App case *) unfold sem_has_type in IHHe1, IHHe2.
+      specialize IHHe1 with γ.
+      specialize IHHe2 with γ.
+      admit.
     - (* If case *) unfold sem_has_type in IHHe1, IHHe2, IHHe3.
       specialize IHHe1 with γ.
       intros e' Hstep He'.
       unfold sem_expr in IHHe1.
-      admit.
+
+      (* Need this tif_lemma: *)
+      destruct (tif_lemma _ _ _ He' _ Hstep) as [e1' [Hif1 Hif2]].
+      assert (TIf e.[γ] e₁.[γ] e₂.[γ] -->*
+                                    TIf e1' e₁.[γ] e₂.[γ]). { auto using if_cond_step. }
+      simpl in IHHe1.
+      destruct (IHHe1 Hγ e1') as [? | ?]; auto.
+      * subst.
+        assert (TIf TTrue e₁.[γ] e₂.[γ] --> e₁.[γ]). auto.
+        assert (e₁.[γ] -->* e'). {
+          eapply irred_unique.
+          apply Hstep.
+          eapply multistep_trans.
+          apply H. econstructor. apply H0. auto. auto.
+        }
+        eapply IHHe2; eauto.
+      * subst.
+        assert (TIf TFalse e₁.[γ] e₂.[γ] --> e₂.[γ]). auto.
+        assert (e₂.[γ] -->* e'). {
+          eapply irred_unique.
+          apply Hstep.
+          eapply multistep_trans.
+          apply H. econstructor. apply H0. auto. auto.
+        }
+        eapply IHHe3; eauto.
   Admitted.
-
-  (* Need a bunch of congruence step lemmas: *)
-
-
 
   Lemma sem_type_implies_safe : ∀ e τ, ⊧ e ∈ τ → safe e.
   Proof.
@@ -312,12 +390,14 @@ Section TypeSafety.
     destruct (irred_decidable e').
     - right. assumption.
     - left.
-      eapply sem_value_is_value. apply H; eauto.
+      eapply sem_value_is_value. apply H; auto.
   Qed.
 
   Theorem type_safety : ∀ τ t, ⊢ t ∈ τ → safe t.
   Proof.
     eauto using fund_lemma, sem_type_implies_safe.
   Qed.
+
+  Print Assumptions type_safety.
 
 End TypeSafety.
