@@ -32,12 +32,10 @@ Proof.
   destruct v; auto; right; intros H; inversion H.
 Qed.
 
-
 Reserved Notation "e '-->' e'" (at level 80).
 Inductive step : term -> term -> Prop :=
 | step_beta : ∀ T e v u, value v → u = e.[v .: ids] → TApp (TLam T e) v --> u
 | step_app1 : ∀ e e' e2, e --> e' → TApp e e2 --> TApp e' e2
-(* | step_app2 : ∀ T e e2 e2', e2 --> e2' → TApp (TLam T e) e2 --> TApp (TLam T e) e2' *)
 | step_app2 : ∀ v e2 e2', value v → e2 --> e2' → TApp v e2 --> TApp v e2'
 | step_if : ∀ e e' e1 e2, e --> e' → TIf e e1 e2 --> TIf e' e1 e2
 | step_ifT : ∀ e1 e2, TIf TTrue e1 e2 --> e1
@@ -479,7 +477,7 @@ Section TypeSafety.
   Qed.
 
   Print sem_type_implies_safe.
-  Print Assumptions irred_decidable.
+  Print Assumptions sem_has_type.
 
   Print Assumptions sem_type_implies_safe.
 
