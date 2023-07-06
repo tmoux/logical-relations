@@ -476,16 +476,9 @@ Section TypeSafety.
       eapply sem_value_is_value. apply H; auto.
   Qed.
 
-  Print sem_type_implies_safe.
-  Print Assumptions sem_has_type.
-
-  Print Assumptions sem_type_implies_safe.
-
   Theorem type_safety : ∀ τ t, ⊢ t ∈ τ → safe t.
   Proof.
     eauto using fund_lemma, sem_type_implies_safe.
   Qed.
-
-  Print Assumptions type_safety.
 
 End TypeSafety.
