@@ -3,6 +3,10 @@ Require Import Relations.Relation_Operators.
 Require Import List.
 Require Import Autosubst.Autosubst.
 
+(* We present a simple proof of type safety for STLC using logical relations.
+   We use the Autosubst library to handle binding/substitutions.
+   It also makes it easy to state and prove details about substitutions in the fundamental lemma. *)
+
 Inductive type : Type :=
 | Bool
 | Arr (t1 t2 : type).
@@ -16,6 +20,7 @@ Inductive term : Type :=
 | TLam (T : type) (e : {bind term})
 | TApp (f e : term).
 
+(* Autosubst black magic. *)
 #[export] Instance Ids_term : Ids term. derive. Defined.
 #[export] Instance Rename_term : Rename term. derive. Defined.
 #[export] Instance Subst_term : Subst term. derive. Defined.
@@ -51,7 +56,6 @@ Lemma multistep_step : ∀ x y, x --> y → x -->* y.
 Proof.
   intros. econstructor; eauto.
 Qed.
-
 #[export] Hint Resolve multistep_step : core.
 
 Lemma multistep_trans : ∀ x y z, x -->* y → y -->* z → x -->* z.
@@ -59,6 +63,28 @@ Proof.
   intros x y z H.
   induction H; intros; auto.
   econstructor. apply H. apply IHclos_refl_trans_1n; auto.
+Qed.
+
+(* We will need these congruence lemmas later. *)
+Lemma if_cond_cong : ∀ e1 e2 e3 e1', e1 -->* e1' → TIf e1 e2 e3 -->* TIf e1' e2 e3.
+Proof.
+  intros ? ? ? ? H.
+  induction H; auto; [constructor |].
+  econstructor; [constructor; apply H | auto].
+Qed.
+
+Lemma app_cong1 : ∀ e1 e2 e1', e1 -->* e1' → TApp e1 e2 -->* TApp e1' e2.
+Proof.
+  intros ? ? ? H.
+  induction H; [constructor |].
+  econstructor; [constructor; apply H | auto].
+Qed.
+
+Lemma app_cong2 : ∀ τ e1 e2 e2', e2 -->* e2' → TApp (TLam τ e1) e2 -->* TApp (TLam τ e1) e2'.
+Proof.
+  intros ? ? ? ? H.
+  induction H; [constructor |].
+  econstructor; [apply step_app2; [constructor | apply H] | auto].
 Qed.
 
 Definition nf (t : term) := ∀ t', ¬ (t --> t').
@@ -75,21 +101,11 @@ Ltac value_step :=
   | [ Hv : value ?v, Hstep : ?v --> ?e  |- _ ] => exfalso; apply (value_is_nf _ Hv _ Hstep)
   end.
 
-Lemma value_multistep : ∀ v v', value v → v -->* v' → v' = v.
+Lemma value_multistep : ∀ {v v'}, value v → v -->* v' → v' = v.
 Proof.
-  intros.
-  inversion H0. auto.
-  value_step.
+  intros v v' H1 H2.
+  inversion H2; [auto | value_step].
 Qed.
-
-Section Examples.
-  Definition e_id := TLam Bool (TVar 0).
-  Goal TApp e_id TTrue --> TTrue.
-    constructor. apply value_true.
-    simpl. reflexivity.
-  Qed.
-
-End Examples.
 
 Definition irred (e : term) := forall e', ¬ (e --> e').
 Ltac irred_step :=
@@ -97,6 +113,26 @@ Ltac irred_step :=
   | [ H : irred ?e, Hstep : ?e --> ?e' |- _ ] => exfalso; apply H in Hstep; assumption
   end.
 
+Lemma irred_dec : ∀ e, (∃ e', e --> e') ∨ irred e.
+Proof.
+  induction e; try solve [right; intros ? H; inversion H; value_step].
+  - destruct e1; try solve [left; eexists; auto];
+      repeat (destruct IHe1 as [[e1' ?] | ?]; [
+            left; eexists; apply step_if; apply H |
+      right; intros e' Hstep; inversion Hstep; subst; irred_step ]).
+  - destruct IHe1 as [[e1' ?] | ?].
+    left. eexists. constructor. apply H.
+    destruct IHe2 as [[e2' ?] | ?].
+    destruct (value_dec e1).
+    * left. eexists. apply step_app2. apply H1. apply H0.
+    * right. intros e' Hstep. inversion Hstep; subst. value_step. irred_step. apply H1. assumption.
+    * destruct (value_dec e1).
+      destruct H1; try (right; intros e' Hstep; inversion Hstep; subst; irred_step).
+    + destruct (value_dec e2).
+      ++ left. exists e.[e2/]. constructor; auto.
+      ++ right. intros e' Hstep. inversion Hstep; subst. auto. inversion H5. irred_step.
+    + right. intros e' Hstep. inversion Hstep; subst. apply H1. constructor. irred_step. irred_step.
+Qed.
 
 Section Deterministic.
   Theorem step_deterministic : ∀ {s t₁ t₂ : term},
@@ -108,14 +144,6 @@ Section Deterministic.
     generalize dependent t₂.
     induction Ht₁; intros t₂ Ht₂; inversion Ht₂; subst; auto; try value_step; solve [f_equal; apply IHHt₁; auto].
   Qed.
-    (*
-    - inversion Ht₂; subst. reflexivity. value_step. value_step.
-    - inversion Ht₂; subst. value_step. rewrite (IHHt₁ e'0). reflexivity. assumption. value_step.
-    - inversion Ht₂; subst. value_step. value_step. f_equal. auto.
-    - inversion Ht₂; subst; auto; try value_step. f_equal. auto.
-    - inversion Ht₂; subst; auto; try value_step.
-    - inversion Ht₂; subst; auto; try value_step.
-    *)
 
   Corollary confluence : ∀ {t u v : term},
       t -->* u →
@@ -125,43 +153,23 @@ Section Deterministic.
     intros t u v Hu.
     generalize dependent v.
     induction Hu; intros v Hv.
-    - exists v; split. auto. constructor.
+    - exists v; split; [auto | constructor].
     - destruct Hv.
-      * exists z. split. constructor. econstructor. apply H. assumption.
+      * exists z. split; [constructor | econstructor; [apply H | assumption]].
       * assert (Hy : y0 = y). { eapply step_deterministic. apply H0. assumption. }
         rewrite Hy in Hv.
-        apply IHHu. apply Hv.
+        auto.
   Qed.
 
-
-  Corollary irred_unique : ∀ a b c, a -->* b → a -->* c → irred b → c -->* b.
+  Corollary irred_unique : ∀ {a b c : term}, a -->* b → a -->* c → irred b → c -->* b.
   Proof.
-    intros.
-    destruct (confluence H H0) as [z [? ?]].
-    inversion H2; subst. auto. irred_step.
+    intros a b c Hab Hac Hb.
+    destruct (confluence Hab Hac) as [z [Hbz Hcz]].
+    inversion Hbz; subst; [auto | irred_step].
   Qed.
-
 End Deterministic.
 
-
-(*
-Definition context := var → option type.
-Definition empty : context := fun _ => None.
-
-#[export] Instance Rename_ctx : Rename context.
-Proof.
-  unfold Rename.
-  intros ρ Γ x.
-  exact (Γ (ρ x)).
-Defined.
-
-Definition shift_ctx : type → context → context :=
-  fun T Γ x => match x with
-               | O => Some T
-               | S n => Γ n
-               end.
-*)
-
+(* A typing context is just represented as a list of types, where the i'th type is the type of the i'th debrujin index. *)
 Definition context := list type.
 Definition empty : context := nil.
 
@@ -178,48 +186,12 @@ Inductive has_type : context → term → type → Prop :=
 where "Γ '⊢' e '∈' T" := (has_type Γ e T).
 Notation "'⊢' e '∈' T" := (empty ⊢ e ∈ T) (at level 85).
 
-
 Section TypeSafety.
+  (* A term is _safe_ if for any term e' that it can step to, either e' is a value of e' can make another step. *)
   Definition safe (e : term) := forall e', e -->* e' → value e' ∨ ∃ e'', e' --> e''.
 
-  (*
-  This definition doesn't work: runs into positivity requirement for inductive types.
-  Inductive sem_value : type → term → Prop :=
-  | sem_value_true : sem_value Bool TTrue
-  | sem_value_false : sem_value Bool TFalse
-  | sem_value_arr : ∀ τ₁ τ₂ e, (∀ v, value v → sem_value τ₁ v → sem_expr τ₂ e.[v/]) → sem_value (τ₁ ⇒ τ₂) (TLam τ₁ e)
-  with sem_expr : type → term → Prop :=
-  | sem_exprC : ∀ τ e, (∀ e', e -->* e' → (* irred(e') → *) sem_value τ e') → sem_expr τ e.
-  *)
-
-  Lemma irred_decidable : ∀ e, (∃ e', e --> e') ∨ irred e.
-  Proof.
-    induction e.
-    - right. intros e' H. value_step.
-    - right. intros e' H. value_step.
-    - destruct e1; try solve [left; eexists; auto];
-        repeat (destruct IHe1 as [[e1' ?] | ?]; [
-        left; eexists; apply step_if; apply H |
-        right; intros e' Hstep; inversion Hstep; subst; irred_step ]).
-    - right. intros e' H. inversion H.
-    - right. intros e' H. value_step.
-    - destruct IHe1 as [[e1' ?] | ?].
-      left. eexists. constructor. apply H.
-      destruct IHe2 as [[e2' ?] | ?].
-      destruct (value_dec e1).
-      * left. eexists. apply step_app2. apply H1. apply H0.
-      * right. intros e' Hstep. inversion Hstep; subst. value_step. irred_step. apply H1. assumption.
-      * destruct (value_dec e1).
-        destruct H1.
-        + right. intros e' Hstep. inversion Hstep; subst. irred_step. irred_step.
-        + right. intros e' Hstep. inversion Hstep; subst. irred_step. irred_step.
-        + destruct (value_dec e2).
-          ++ left. exists e.[e2/]. constructor; auto.
-          ++ right. intros e' Hstep. inversion Hstep; subst. auto. inversion H5. irred_step.
-        + right. intros e' Hstep. inversion Hstep; subst. apply H1. constructor. irred_step. irred_step.
-  Qed.
-
-  (* The easiest way to write this is to avoid mutual recursion altogether, since Coq's termination checker isn't smart enough to see that this is well-founded. *)
+  (* Value and expression semantic interpretations are functions from term to Prop paramaterized by a type. Intuitively, they represent sets of terms that "behave" like values/expressions of a given type. *)
+  (* The easiest way to define these is to avoid mutual recursion altogether, since Coq's termination checker isn't smart enough to see that this is well-founded. *)
   Fixpoint sem_value (T : type) : term → Prop :=
     match T with
     | Bool => fun t => t = TTrue ∨ t = TFalse
@@ -234,24 +206,30 @@ Section TypeSafety.
     reflexivity.
   Qed.
 
-
   Notation "v '∈' '𝓥⟦' τ '⟧'" := (sem_value τ v) (at level 80).
   Notation "e '∈' '𝓔⟦' τ '⟧'" := (sem_expr τ e) (at level 80).
+
+  Lemma sem_value_is_value : ∀ v τ, v ∈ 𝓥⟦ τ ⟧ → value v.
+  Proof.
+    intros v τ H.
+    destruct τ.
+    - destruct H; rewrite H; auto.
+    - destruct H as [? [H ?]]; rewrite H; auto.
+  Qed.
 
   Lemma sem_val_is_sem_expr : forall v τ, v ∈ 𝓥⟦ τ ⟧ → v ∈ 𝓔⟦ τ ⟧.
   Proof.
     intros v τ H.
     destruct τ.
     - destruct H; intros e' Hstep; subst; apply value_multistep in Hstep; subst; simpl; auto.
-    - simpl in H.
-      destruct H as [e [H1 H2]].
+    - destruct H as [e [? ?]].
       subst.
       intros e' Hstep. apply value_multistep in Hstep; subst; simpl; auto.
-      intros.
-      eexists. split. reflexivity.
-      apply H2.
+      eexists; split; auto.
   Qed.
 
+  (* A substitution is just a function var → term.
+     A _valid substitution_ is inductively defined with respect to a context Γ in the natural way (γ is valid if it maps all variables in Γ to semantic values). *)
   Definition id_subst : var → term := ids.
   Inductive valid_subst : context → (var → term) → Prop :=
   | subst_empty : valid_subst empty id_subst
@@ -263,63 +241,18 @@ Section TypeSafety.
     intros Γ γ H.
     induction H; intros.
     - destruct x; simpl in *; discriminate.
-    - induction x. simpl in *. inversion H1. subst. assumption.
-      simpl in *. apply IHvalid_subst. assumption.
+    - induction x. inversion H1. subst. assumption.
+      apply IHvalid_subst. assumption.
   Qed.
 
-    (* Lemma: if e has type τ in Γ, and γ is a valid substitution, then e.[γ] is closed term and has type τ in empty context*)
-
+  (* Finally, a (possibly open) term t is semantically well typed if for any valid substitution γ, γ(t) ∈ 𝓔⟦ τ ⟧. *)
   Definition sem_has_type (Γ : context) (e : term) (τ : type) :=
     ∀ (γ : var → term), valid_subst Γ γ → e.[γ] ∈ 𝓔⟦ τ ⟧.
   Notation "Γ '⊧' e '∈' τ" := (sem_has_type Γ e τ) (at level 80).
   Notation "'⊧' e '∈' T" := (empty ⊧ e ∈ T) (at level 85).
 
-  Lemma sem_value_is_value : ∀ v τ, v ∈ 𝓥⟦ τ ⟧ → value v.
-  Proof.
-    intros v τ H.
-    destruct τ.
-    - unfold sem_value in H.
-      destruct H; rewrite H; auto.
-    - destruct H as [H1 [H2 H3]].
-      rewrite H2.
-      auto.
-  Qed.
 
-
-  (* Need a bunch of congruence step lemmas: *)
-  Lemma if_cond_step : ∀ e1 e2 e3 e1', e1 -->* e1' → TIf e1 e2 e3 -->* TIf e1' e2 e3.
-  Proof.
-    intros.
-    induction H; auto.
-    constructor.
-    econstructor.
-    constructor. apply H.
-    assumption.
-  Qed.
-
-  Lemma app_cong1 : ∀ e1 e2 e1', e1 -->* e1' → TApp e1 e2 -->* TApp e1' e2.
-  Proof.
-    intros.
-    induction H.
-    constructor.
-    econstructor.
-    constructor. apply H.
-    assumption.
-  Qed.
-
-  Lemma app_cong2 : ∀ τ e1 e2 e2', e2 -->* e2' → TApp (TLam τ e1) e2 -->* TApp (TLam τ e1) e2'.
-  Proof.
-    intros.
-    induction H.
-    constructor.
-    econstructor.
-    apply step_app2. constructor. apply H.
-    assumption.
-  Qed.
-
-  (* When If takes a step, either we take a step to another If, or we step to one of the branches.
-   If the whole expression steps to a reducible value, e1 must have stepped to a reducible value.
-   The induction principle is tricky, naively inducting on the Hif doesn't seem to work. Instead we write it using a fixpoint, but we need to be careful to ensure the arguments are decreasing. *)
+   (* The induction principle is tricky, inducting on the Hif doesn't seem to work. Instead we write it using a fixpoint, but we need to be careful to ensure the recursion is well founded. *)
   Fixpoint tif_lemma (e' e2 e3 : term) (H : irred e') (e1 : term) (Hif : TIf e1 e2 e3 -->* e') {struct Hif} : ∃ e1', e1 -->* e1' ∧ irred e1'.
   Proof.
     destruct Hif.
@@ -327,7 +260,7 @@ Section TypeSafety.
       intros e1' Hstep.
       assert (TIf e1 e2 e3 --> TIf e1' e2 e3). constructor. auto.
       unfold irred in H. specialize H with (TIf e1' e2 e3). apply H. auto.
-    - destruct (irred_decidable e1).
+    - destruct (irred_dec e1).
       * destruct H1 as [e1' ?]. specialize tif_lemma with z e2 e3 e1'.
         apply tif_lemma in H.
         destruct H as [e1'' [? ?]].
@@ -340,6 +273,7 @@ Section TypeSafety.
       * exists e1. split. constructor. auto.
    Qed.
 
+  (* These two are almost the exact same and should be refactored. *)
   Fixpoint app_lemma1 {e1 e2 e' : term} (He' : irred e') (H : TApp e1 e2 -->* e') : ∃ e1', e1 -->* e1' ∧ irred e1'.
   Proof.
     destruct H.
@@ -347,7 +281,7 @@ Section TypeSafety.
       intros e1' Hstep.
       assert (TApp e1 e2 --> TApp e1' e2). constructor; auto.
       unfold irred in He'. specialize He' with (TApp e1' e2). auto.
-    - destruct (irred_decidable e1).
+    - destruct (irred_dec e1).
       * destruct H1 as [e1' ?]. specialize app_lemma1 with e1' e2 z.
         apply app_lemma1 in He'.
         destruct He' as [e1'' [? ?]].
@@ -367,7 +301,7 @@ Section TypeSafety.
       intros e2' Hstep.
       assert (TApp (TLam τ e) e2 --> TApp (TLam τ e) e2'). apply step_app2; auto.
       unfold irred in He'. specialize He' with (TApp (TLam τ e) e2'). auto.
-    - destruct (irred_decidable e2).
+    - destruct (irred_dec e2).
       * destruct H1 as [e2' ?]. specialize app_lemma2 with τ e e2' z.
         apply app_lemma2 in He'.
         destruct He' as [e2'' [? ?]].
@@ -381,65 +315,57 @@ Section TypeSafety.
       * exists e2. split. constructor. auto.
   Qed.
 
+  (* The key idea behind using logical relations here is that we want to show if a term t is syntactically well-typed, then it is "safe" (does not get stuck).
+     Instead of proving progress/preservation theorems, we develop the notion of a term being semantically well-typed, which is carefully designed to easily imply the type safety result.
+     The main effort is then proving the fundamental lemma, i.e., any syntactically well-typed term is also semantically well-typed. *)
+
   Lemma fund_lemma : ∀ e τ, ⊢ e ∈ τ → ⊧ e ∈ τ.
   Proof.
+    (* We induct on the typing derivation. *)
     intros e τ He.
     induction He; intros γ Hγ; simpl.
-    - (* Var case *)
-      apply sem_val_is_sem_expr.
-      eapply valid_subst_var; eauto.
-    - apply sem_val_is_sem_expr; simpl; auto.
-    - apply sem_val_is_sem_expr; simpl; auto.
+    - (* Var case *) eauto using sem_val_is_sem_expr, valid_subst_var.
+    - (* True case *) apply sem_val_is_sem_expr; simpl; auto.
+    - (* False case *) apply sem_val_is_sem_expr; simpl; auto.
     - (* Lambda case *) intros e' Hstep.
-      assert (e' = TLam τ₁ e.[up γ]). { apply value_multistep; auto. }
-      rewrite H.
-      intros.
+      rewrite (value_multistep (value_lam _ _) Hstep).
       rewrite sem_value_arr.
       eexists; split; auto.
       intros v Hv.
       unfold sem_has_type in IHHe.
       specialize IHHe with (v .: γ).
-      assert (e.[up γ].[v/] = e.[v .: γ]). { autosubst. }
-      rewrite H1.
-      apply IHHe.
-      constructor; auto.
+      assert (Hs : e.[up γ].[v/] = e.[v .: γ]). { autosubst. } rewrite Hs.
+      apply IHHe; auto.
     - (* App case *) unfold sem_has_type in IHHe1, IHHe2.
-      specialize IHHe1 with γ.
-      specialize IHHe2 with γ.
-      unfold sem_expr in IHHe1.
+      specialize IHHe1 with γ. specialize IHHe2 with γ.
       intros e' Hstep He'.
-      destruct (app_lemma1 He' Hstep) as [f' [? ?]].
+      cut (∃ e'', e'' -->* e' ∧ e'' ∈ 𝓔⟦ τ ⟧); [intros [e'' [? ?]]; auto |].
+
+      destruct (app_lemma1 He' Hstep) as [f' [H1 H2]].
       assert (TApp f.[γ] e.[γ] -->* TApp f' e.[γ]). { apply app_cong1; auto. }
-      specialize IHHe1 with f'.
+      unfold sem_expr in IHHe1. specialize IHHe1 with f'.
       rewrite sem_value_arr in IHHe1.
-      destruct IHHe1 as [f'' [? ?]]; auto.
+      destruct IHHe1 as [f'' [Hf' Hf'']]; auto. clear H1. clear H2.
       subst.
-      destruct (app_lemma1 He' Hstep) as [f' [? ?]].
-      assert (TApp (TLam τ₂ f'') e.[γ] -->* e'). {
-        eapply irred_unique. apply Hstep. assumption. assumption. }
-      destruct (app_lemma2 He' H5) as [e2' [? ?]].
+      assert (TApp (TLam τ₂ f'') e.[γ] -->* e'). 
+        { eapply irred_unique; [apply Hstep | |]; auto. }
+
+      destruct (app_lemma2 He' H0) as [e2' [? ?]].
       unfold sem_expr in IHHe2.
       specialize IHHe2 with e2'.
-
-      assert (e2' ∈ 𝓥⟦ τ₂ ⟧). { apply IHHe2; auto. }
-      assert (value e2'). { eapply sem_value_is_value; eauto. }
-      assert (TApp (TLam τ₂ f'') e.[γ] -->* TApp (TLam τ₂ f'') e2'). { apply app_cong2; auto. }
-      assert (TApp (TLam τ₂ f'') e2' -->* f''.[e2'/]). { econstructor; auto. }
-      assert (f''.[e2'/] ∈ 𝓔⟦ τ ⟧). { apply H3. auto. }
-      assert (f''.[e2'/] -->* e').
-      { eapply irred_unique; eauto.
-        apply Operators_Properties.clos_rt_rt1n_iff.
-        eapply rt_trans.
-        apply Operators_Properties.clos_rt_rt1n_iff. apply H10.
-        apply Operators_Properties.clos_rt_rt1n_iff. apply H11. }
-      apply H12; auto.
+      exists (f''.[e2'/]); split.
+      + eapply irred_unique; eauto.
+        apply multistep_trans with (TApp (TLam τ₂ f'') e2').
+        apply app_cong2; auto.
+        econstructor; auto. constructor; [eapply sem_value_is_value; eauto | reflexivity].
+      + apply Hf''. apply IHHe2; auto.
     - (* If case *) unfold sem_has_type in IHHe1, IHHe2, IHHe3.
       specialize IHHe1 with γ.
       intros e' Hstep He'.
       unfold sem_expr in IHHe1.
       destruct (tif_lemma _ _ _ He' _ Hstep) as [e1' [Hif1 Hif2]].
       assert (TIf e.[γ] e₁.[γ] e₂.[γ] -->*
-                                    TIf e1' e₁.[γ] e₂.[γ]). { auto using if_cond_step. }
+                                    TIf e1' e₁.[γ] e₂.[γ]). { auto using if_cond_cong. }
       simpl in IHHe1.
       destruct (IHHe1 Hγ e1') as [? | ?]; auto.
       * subst.
@@ -470,15 +396,13 @@ Section TypeSafety.
     unfold id_subst in H.
     rewrite subst_id in H.
     intros e' He'.
-    destruct (irred_decidable e').
+    destruct (irred_dec e').
     - right. assumption.
-    - left.
-      eapply sem_value_is_value. apply H; auto.
+    - left. eapply sem_value_is_value; apply H; auto.
   Qed.
 
-  Theorem type_safety : ∀ τ t, ⊢ t ∈ τ → safe t.
+  Corollary type_safety : ∀ τ t, ⊢ t ∈ τ → safe t.
   Proof.
     eauto using fund_lemma, sem_type_implies_safe.
   Qed.
-
 End TypeSafety.
