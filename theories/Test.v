@@ -230,9 +230,8 @@ Section TypeSafety.
 
   (* A substitution is just a function var → term.
      A _valid substitution_ is inductively defined with respect to a context Γ in the natural way (γ is valid if it maps all variables in Γ to semantic values). *)
-  Definition id_subst : var → term := ids.
   Inductive valid_subst : context → (var → term) → Prop :=
-  | subst_empty : valid_subst empty id_subst
+  | subst_empty : valid_subst empty ids
   | subst_cons : ∀ Γ γ v τ, valid_subst Γ γ → v ∈ 𝓥⟦ τ ⟧ → valid_subst (τ :: Γ) (v .: γ).
   #[local] Hint Constructors valid_subst : core.
 
@@ -251,47 +250,39 @@ Section TypeSafety.
   Notation "Γ '⊧' e '∈' τ" := (sem_has_type Γ e τ) (at level 80).
   Notation "'⊧' e '∈' T" := (empty ⊧ e ∈ T) (at level 85).
 
-
-   (* The induction principle is tricky, inducting on the Hif doesn't seem to work. Instead we write it using a fixpoint, but we need to be careful to ensure the recursion is well founded. *)
+   (* We need a series of lemmas that states that if an elimination form terminates, then its subexpressions must necessarily terminate as well.
+      This clearly relies on the determinism of the step relation.
+      The induction hypothesis is tricky; inducting on the Hif doesn't seem to work. Instead we write it using a fixpoint, but we need to be careful to ensure the recursion is well founded. *)
   Fixpoint tif_lemma (e' e2 e3 : term) (H : irred e') (e1 : term) (Hif : TIf e1 e2 e3 -->* e') {struct Hif} : ∃ e1', e1 -->* e1' ∧ irred e1'.
   Proof.
     destruct Hif.
     - exists e1. split. constructor.
       intros e1' Hstep.
-      assert (TIf e1 e2 e3 --> TIf e1' e2 e3). constructor. auto.
-      unfold irred in H. specialize H with (TIf e1' e2 e3). apply H. auto.
+      unfold irred in H. specialize H with (TIf e1' e2 e3). auto using H.
     - destruct (irred_dec e1).
-      * destruct H1 as [e1' ?]. specialize tif_lemma with z e2 e3 e1'.
+      * destruct H1 as [e1' H1]. specialize tif_lemma with z e2 e3 e1'.
         apply tif_lemma in H.
         destruct H as [e1'' [? ?]].
-        exists e1''. split.
-        econstructor. apply H1. apply H.
-        apply H2.
-        assert (TIf e1 e2 e3 --> TIf e1' e2 e3). constructor. auto.
-        assert (y = TIf e1' e2 e3). apply (step_deterministic H0 H2).
-        rewrite H3 in *. apply Hif.
-      * exists e1. split. constructor. auto.
+        exists e1''. split; [| auto].
+        econstructor; [apply H1 | ]; auto.
+        replace y with (TIf e1' e2 e3) in *; [ | apply (@step_deterministic (TIf e1 e2 e3))]; auto.
+      * exists e1; split; [constructor | auto].
    Qed.
 
-  (* These two are almost the exact same and should be refactored. *)
   Fixpoint app_lemma1 {e1 e2 e' : term} (He' : irred e') (H : TApp e1 e2 -->* e') : ∃ e1', e1 -->* e1' ∧ irred e1'.
   Proof.
     destruct H.
     - exists e1. split. constructor.
       intros e1' Hstep.
-      assert (TApp e1 e2 --> TApp e1' e2). constructor; auto.
       unfold irred in He'. specialize He' with (TApp e1' e2). auto.
     - destruct (irred_dec e1).
-      * destruct H1 as [e1' ?]. specialize app_lemma1 with e1' e2 z.
+      * destruct H1 as [e1' H1]. specialize app_lemma1 with e1' e2 z.
         apply app_lemma1 in He'.
         destruct He' as [e1'' [? ?]].
-        exists e1''. split.
-        econstructor. apply H1. apply H2.
-        assumption.
-        assert (TApp e1 e2 --> TApp e1' e2). constructor. auto.
-        assert (y = TApp e1' e2). apply (step_deterministic H H2).
-        rewrite H3 in *. apply H0.
-      * exists e1. split. constructor. auto.
+        exists e1''. split; auto.
+        econstructor; [apply H1 |]; auto.
+        replace y with (TApp e1' e2) in *; [ | apply (@step_deterministic (TApp e1 e2))]; auto.
+      * exists e1; split; [constructor | auto].
   Qed.
 
   Fixpoint app_lemma2 {τ} {e e2 e' : term} (He' : irred e') (H : TApp (TLam τ e) e2 -->* e') {struct H} : ∃ e2', e2 -->* e2' ∧ irred e2'.
@@ -299,19 +290,14 @@ Section TypeSafety.
     destruct H.
     - exists e2. split. constructor.
       intros e2' Hstep.
-      assert (TApp (TLam τ e) e2 --> TApp (TLam τ e) e2'). apply step_app2; auto.
       unfold irred in He'. specialize He' with (TApp (TLam τ e) e2'). auto.
     - destruct (irred_dec e2).
-      * destruct H1 as [e2' ?]. specialize app_lemma2 with τ e e2' z.
+      * destruct H1 as [e2' H1]. specialize app_lemma2 with τ e e2' z.
         apply app_lemma2 in He'.
         destruct He' as [e2'' [? ?]].
-        exists e2''. split.
+        exists e2''. split; auto.
         + econstructor. apply H1. assumption.
-        + assumption.
-        + assert (TApp (TLam τ e) e2 --> TApp (TLam τ e) e2'). apply step_app2; auto.
-          assert (y = TApp (TLam τ e) e2'). apply (step_deterministic H H2).
-          rewrite H3 in *.
-          assumption.
+        + replace y with (TApp (TLam τ e) e2') in *; [ | apply (@step_deterministic (TApp (TLam τ e) e2)) ]; auto.
       * exists e2. split. constructor. auto.
   Qed.
 
@@ -321,7 +307,6 @@ Section TypeSafety.
 
   Lemma fund_lemma : ∀ e τ, ⊢ e ∈ τ → ⊧ e ∈ τ.
   Proof.
-    (* We induct on the typing derivation. *)
     intros e τ He.
     induction He; intros γ Hγ; simpl.
     - (* Var case *) eauto using sem_val_is_sem_expr, valid_subst_var.
@@ -334,22 +319,19 @@ Section TypeSafety.
       intros v Hv.
       unfold sem_has_type in IHHe.
       specialize IHHe with (v .: γ).
-      assert (Hs : e.[up γ].[v/] = e.[v .: γ]). { autosubst. } rewrite Hs.
+      replace e.[up γ].[v/] with e.[v .: γ]; [| autosubst].
       apply IHHe; auto.
     - (* App case *) unfold sem_has_type in IHHe1, IHHe2.
       specialize IHHe1 with γ. specialize IHHe2 with γ.
       intros e' Hstep He'.
       cut (∃ e'', e'' -->* e' ∧ e'' ∈ 𝓔⟦ τ ⟧); [intros [e'' [? ?]]; auto |].
-
       destruct (app_lemma1 He' Hstep) as [f' [H1 H2]].
       assert (TApp f.[γ] e.[γ] -->* TApp f' e.[γ]). { apply app_cong1; auto. }
       unfold sem_expr in IHHe1. specialize IHHe1 with f'.
       rewrite sem_value_arr in IHHe1.
       destruct IHHe1 as [f'' [Hf' Hf'']]; auto. clear H1. clear H2.
       subst.
-      assert (TApp (TLam τ₂ f'') e.[γ] -->* e'). 
-        { eapply irred_unique; [apply Hstep | |]; auto. }
-
+      assert (TApp (TLam τ₂ f'') e.[γ] -->* e'). { eapply irred_unique; [apply Hstep | |]; auto. }
       destruct (app_lemma2 He' H0) as [e2' [? ?]].
       unfold sem_expr in IHHe2.
       specialize IHHe2 with e2'.
@@ -364,27 +346,19 @@ Section TypeSafety.
       intros e' Hstep He'.
       unfold sem_expr in IHHe1.
       destruct (tif_lemma _ _ _ He' _ Hstep) as [e1' [Hif1 Hif2]].
-      assert (TIf e.[γ] e₁.[γ] e₂.[γ] -->*
-                                    TIf e1' e₁.[γ] e₂.[γ]). { auto using if_cond_cong. }
+      assert (TIf e.[γ] e₁.[γ] e₂.[γ] -->* TIf e1' e₁.[γ] e₂.[γ]).
+        { auto using if_cond_cong. }
       simpl in IHHe1.
-      destruct (IHHe1 Hγ e1') as [? | ?]; auto.
-      * subst.
-        assert (TIf TTrue e₁.[γ] e₂.[γ] --> e₁.[γ]). auto.
-        assert (e₁.[γ] -->* e'). {
-          eapply irred_unique.
+      destruct (IHHe1 Hγ e1') as [? | ?]; auto; subst.
+      * assert (e₁.[γ] -->* e').
+        { eapply irred_unique; [| | auto].
           apply Hstep.
-          eapply multistep_trans.
-          apply H. econstructor. apply H0. auto. auto.
-        }
+          apply multistep_trans with (TIf TTrue e₁.[γ] e₂.[γ]); auto. }
         eapply IHHe2; eauto.
-      * subst.
-        assert (TIf TFalse e₁.[γ] e₂.[γ] --> e₂.[γ]). auto.
-        assert (e₂.[γ] -->* e'). {
-          eapply irred_unique.
+      * assert (e₂.[γ] -->* e').
+        { eapply irred_unique; [| | auto].
           apply Hstep.
-          eapply multistep_trans.
-          apply H. econstructor. apply H0. auto. auto.
-        }
+          apply multistep_trans with (TIf TFalse e₁.[γ] e₂.[γ]); auto. }
         eapply IHHe3; eauto.
   Qed.
 
@@ -392,13 +366,11 @@ Section TypeSafety.
   Proof.
     intros e τ H.
     unfold sem_has_type in H.
-    specialize H with id_subst.
-    unfold id_subst in H.
-    rewrite subst_id in H.
     intros e' He'.
     destruct (irred_dec e').
     - right. assumption.
-    - left. eapply sem_value_is_value; apply H; auto.
+    - left. apply sem_value_is_value with τ.
+      apply H with ids; [| rewrite subst_id |]; auto.
   Qed.
 
   Corollary type_safety : ∀ τ t, ⊢ t ∈ τ → safe t.
