@@ -34,7 +34,7 @@ Inductive value : term → Prop :=
 
 Lemma value_dec : forall v, value v ∨ ¬ (value v).
 Proof.
-  destruct v; auto; right; intros H; inversion H.
+  destruct v; solve [auto; right; intros H; inversion H].
 Qed.
 
 Reserved Notation "e '-->' e'" (at level 80).
@@ -65,7 +65,6 @@ Proof.
   econstructor. apply H. apply IHclos_refl_trans_1n; auto.
 Qed.
 
-(* We will need these congruence lemmas later. *)
 Lemma if_cond_cong : ∀ e1 e2 e3 e1', e1 -->* e1' → TIf e1 e2 e3 -->* TIf e1' e2 e3.
 Proof.
   intros ? ? ? ? H.
@@ -136,9 +135,7 @@ Qed.
 
 Section Deterministic.
   Theorem step_deterministic : ∀ {s t₁ t₂ : term},
-      s --> t₁ →
-      s --> t₂ →
-      t₁ = t₂.
+      s --> t₁ → s --> t₂ → t₁ = t₂.
   Proof.
     intros s t₁ t₂ Ht₁.
     generalize dependent t₂.
@@ -146,9 +143,7 @@ Section Deterministic.
   Qed.
 
   Corollary confluence : ∀ {t u v : term},
-      t -->* u →
-      t -->* v →
-      ∃ z, u -->* z ∧ v -->* z.
+      t -->* u → t -->* v → ∃ z, u -->* z ∧ v -->* z.
   Proof.
     intros t u v Hu.
     generalize dependent v.
@@ -156,9 +151,8 @@ Section Deterministic.
     - exists v; split; [auto | constructor].
     - destruct Hv.
       * exists z. split; [constructor | econstructor; [apply H | assumption]].
-      * assert (Hy : y0 = y). { eapply step_deterministic. apply H0. assumption. }
-        rewrite Hy in Hv.
-        auto.
+      * replace y0 with y in *. auto.
+        eapply step_deterministic; [apply H | assumption].
   Qed.
 
   Corollary irred_unique : ∀ {a b c : term}, a -->* b → a -->* c → irred b → c -->* b.
@@ -187,6 +181,10 @@ where "Γ '⊢' e '∈' T" := (has_type Γ e T).
 Notation "'⊢' e '∈' T" := (empty ⊢ e ∈ T) (at level 85).
 
 Section TypeSafety.
+  (* The key idea behind using logical relations here is that we want to show if a term t is syntactically well-typed, then it is "safe" (does not get stuck).
+     Instead of proving progress/preservation theorems, we develop the notion of a term being semantically well-typed, which is carefully designed to easily imply the type safety result.
+     The main effort is then proving the fundamental lemma, i.e., any syntactically well-typed term is also semantically well-typed. *)
+
   (* A term is _safe_ if for any term e' that it can step to, either e' is a value of e' can make another step. *)
   Definition safe (e : term) := forall e', e -->* e' → value e' ∨ ∃ e'', e' --> e''.
 
@@ -196,10 +194,10 @@ Section TypeSafety.
     match T with
     | Bool => fun t => t = TTrue ∨ t = TFalse
     | τ₁ ⇒ τ₂ => fun t => ∃ e, t = TLam τ₁ e ∧ (∀ v, sem_value τ₁ v →
-              (∀ e', e.[v/] -->* e' → irred e' → sem_value τ₂ e'))
-                                                end.
+                                                     (∀ e', e.[v/] -->* e' → irred e' → sem_value τ₂ e'))
+    end.
   Definition sem_expr (τ : type) : term → Prop :=
-        fun e => ∀ e', e -->* e' → irred e' → sem_value τ e'.
+    fun e => ∀ e', e -->* e' → irred e' → sem_value τ e'.
 
   Lemma sem_value_arr : ∀ τ₁ τ₂ t, sem_value (τ₁ ⇒ τ₂) t = ∃ e, t = TLam τ₁ e ∧ (∀ v, sem_value τ₁ v → sem_expr τ₂ e.[v/]).
   Proof.
@@ -250,10 +248,10 @@ Section TypeSafety.
   Notation "Γ '⊧' e '∈' τ" := (sem_has_type Γ e τ) (at level 80).
   Notation "'⊧' e '∈' T" := (empty ⊧ e ∈ T) (at level 85).
 
-   (* We need a series of lemmas that states that if an elimination form terminates, then its subexpressions must necessarily terminate as well.
+  (* We need a series of lemmas that state that if an elimination form terminates, then its subexpressions must necessarily terminate as well.
       This clearly relies on the determinism of the step relation.
       The induction hypothesis is tricky; inducting on the Hif doesn't seem to work. Instead we write it using a fixpoint, but we need to be careful to ensure the recursion is well founded. *)
-  Fixpoint tif_lemma (e' e2 e3 : term) (H : irred e') (e1 : term) (Hif : TIf e1 e2 e3 -->* e') {struct Hif} : ∃ e1', e1 -->* e1' ∧ irred e1'.
+  Fixpoint tif_lemma (e' e2 e3 : term) (H : irred e') (e1 : term) (Hif : TIf e1 e2 e3 -->* e') : ∃ e1', e1 -->* e1' ∧ irred e1'.
   Proof.
     destruct Hif.
     - exists e1. split. constructor.
@@ -267,7 +265,7 @@ Section TypeSafety.
         econstructor; [apply H1 | ]; auto.
         replace y with (TIf e1' e2 e3) in *; [ | apply (@step_deterministic (TIf e1 e2 e3))]; auto.
       * exists e1; split; [constructor | auto].
-   Qed.
+  Qed.
 
   Fixpoint app_lemma1 {e1 e2 e' : term} (He' : irred e') (H : TApp e1 e2 -->* e') : ∃ e1', e1 -->* e1' ∧ irred e1'.
   Proof.
@@ -285,7 +283,7 @@ Section TypeSafety.
       * exists e1; split; [constructor | auto].
   Qed.
 
-  Fixpoint app_lemma2 {τ} {e e2 e' : term} (He' : irred e') (H : TApp (TLam τ e) e2 -->* e') {struct H} : ∃ e2', e2 -->* e2' ∧ irred e2'.
+  Fixpoint app_lemma2 {τ} {e e2 e' : term} (He' : irred e') (H : TApp (TLam τ e) e2 -->* e') : ∃ e2', e2 -->* e2' ∧ irred e2'.
   Proof.
     destruct H.
     - exists e2. split. constructor.
@@ -296,15 +294,15 @@ Section TypeSafety.
         apply app_lemma2 in He'.
         destruct He' as [e2'' [? ?]].
         exists e2''. split; auto.
-        + econstructor. apply H1. assumption.
-        + replace y with (TApp (TLam τ e) e2') in *; [ | apply (@step_deterministic (TApp (TLam τ e) e2)) ]; auto.
-      * exists e2. split. constructor. auto.
+      + econstructor. apply H1. assumption.
+      + replace y with (TApp (TLam τ e) e2') in *; [ | apply (@step_deterministic (TApp (TLam τ e) e2)) ]; auto.
+        * exists e2. split. constructor. auto.
   Qed.
 
-  (* The key idea behind using logical relations here is that we want to show if a term t is syntactically well-typed, then it is "safe" (does not get stuck).
-     Instead of proving progress/preservation theorems, we develop the notion of a term being semantically well-typed, which is carefully designed to easily imply the type safety result.
-     The main effort is then proving the fundamental lemma, i.e., any syntactically well-typed term is also semantically well-typed. *)
-
+  (* To prove the fundamental lemma, induct on the typing derivation.
+     The main challenges are proving the lambda and elimination forms cases.
+     The App/If cases are mostly symbol pushing, using the subexpression-termination lemmas stated above.
+     The lambda case pretty much follows the proof in the lecture notes. *)
   Lemma fund_lemma : ∀ e τ, ⊢ e ∈ τ → ⊧ e ∈ τ.
   Proof.
     intros e τ He.
@@ -321,6 +319,7 @@ Section TypeSafety.
       specialize IHHe with (v .: γ).
       replace e.[up γ].[v/] with e.[v .: γ]; [| autosubst].
       apply IHHe; auto.
+
     - (* App case *) unfold sem_has_type in IHHe1, IHHe2.
       specialize IHHe1 with γ. specialize IHHe2 with γ.
       intros e' Hstep He'.
@@ -341,13 +340,14 @@ Section TypeSafety.
         apply app_cong2; auto.
         econstructor; auto. constructor; [eapply sem_value_is_value; eauto | reflexivity].
       + apply Hf''. apply IHHe2; auto.
+
     - (* If case *) unfold sem_has_type in IHHe1, IHHe2, IHHe3.
       specialize IHHe1 with γ.
       intros e' Hstep He'.
       unfold sem_expr in IHHe1.
       destruct (tif_lemma _ _ _ He' _ Hstep) as [e1' [Hif1 Hif2]].
       assert (TIf e.[γ] e₁.[γ] e₂.[γ] -->* TIf e1' e₁.[γ] e₂.[γ]).
-        { auto using if_cond_cong. }
+      { auto using if_cond_cong. }
       simpl in IHHe1.
       destruct (IHHe1 Hγ e1') as [? | ?]; auto; subst.
       * assert (e₁.[γ] -->* e').
